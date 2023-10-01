@@ -1,1 +1,1 @@
-# odin-recipes
+An FX Algo that utilises ML and the MT5 Python integration.
