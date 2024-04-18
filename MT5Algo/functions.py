@@ -22,6 +22,31 @@ from copy import deepcopy as dc
 import requests
 from datetime import datetime, timedelta
 
+
+def FetchJSONNews(url):
+    # Fetch data from the URL
+    response = requests.get(url)
+    response.raise_for_status()  # Raises an HTTPError for bad responses
+    events = response.json()  # Return the JSON data directly
+
+    # Initialize an empty DataFrame
+    df = pd.DataFrame(columns=['Event Time'])
+
+    for event in events:
+        # Check if the event is a high-impact USD event
+        if event['country'] == 'USD' and event['impact'] == 'High':
+            # Parse the event datetime (remove the 'Z' and convert to naive datetime)
+            event_time = datetime.fromisoformat(event['date'].replace('Z', '+00:00')).replace(tzinfo=None)
+            # Add 7 hours to the event time
+            adjusted_time = event_time + timedelta(hours=7)
+            # Format the datetime to remove any timezone information
+            adjusted_time_str = adjusted_time.strftime("%Y-%m-%d %H:%M:%S")
+            # Create a DataFrame for the new row and concatenate it
+            new_row = pd.DataFrame({'Event Time': [adjusted_time_str]})
+            df = pd.concat([df, new_row], ignore_index=True)
+    
+    return df
+
 def MT5Connect():
     # Determine the directory of the currently executing script
     script_dir = os.path.dirname(__file__) if '__file__' in globals() else os.getcwd()
@@ -304,3 +329,46 @@ def DirTrain(symbol, n, timeframe):
     x, y = TargetSplit(df)
     DirModel = OptimiseAndTrain(x, y)
     return DirModel, DirScaler, non_stationaries_dir
+
+def CurrentTime():
+    now = datetime.now().replace(minute=0, second=0, microsecond=0)
+    formatted_time = now.strftime("%Y-%m-%d %H:%M:%S")
+    return formatted_time
+
+
+def Mag(symbol, timeframe, model, scaler, nonstat):
+    df = GetRates(symbol, n=50, timeframe=timeframe)
+    df = df.drop(columns=['low', 'open', 'high']) 
+    df_scaled = LiveStationaryAndScale(df, nonstat, scaler)
+    shifted_df = ShiftClose(df_scaled, n_steps=14)
+    
+    # Get the row corresponding to the current datetime
+    current_time = CurrentTime()
+    current_candle = shifted_df.loc[shifted_df.index == current_time]
+    
+    if current_candle.empty:
+        print("No candle found for the current time.")
+        return None
+    
+    PredictionMag = model.predict(current_candle)
+    return PredictionMag
+
+def Dir(symbol, timeframe, model, scaler, nonstat):
+    df = GetRates(symbol, n=50, timeframe=timeframe)
+    df_scaled = LiveStationaryAndScale(df, nonstat, scaler)
+    
+    # Get the row corresponding to the current datetime
+    current_time = CurrentTime()
+    current_candle = df_scaled.loc[df_scaled.index == current_time]
+    
+    if current_candle.empty:
+        print("No candle found for the current time.")
+        return None, None
+    
+    Close = df.loc[df.index == current_time]
+    EntryPrice = Close['close'].values[0]
+    
+    PredictionDir = model.predict(current_candle)
+    return PredictionDir, EntryPrice
+
+import MetaTrader5 as mt5
