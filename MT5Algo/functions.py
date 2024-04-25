@@ -372,3 +372,135 @@ def Dir(symbol, timeframe, model, scaler, nonstat):
     return PredictionDir, EntryPrice
 
 import MetaTrader5 as mt5
+
+from datetime import datetime
+
+def PlaceTrade(EntryPrice, PredictionDir, PredictionMag, PCT, symbol, HighImpactNews):
+    # Connect to MT5 account
+    if not MT5Connect():
+        print(f"{datetime.now()} - MT5 connection failed.")
+        return False, None, None, None, None
+    
+    # Assume CurrentTime() returns the current time as a string
+    current_time_string = CurrentTime()
+    # Convert string to datetime and adjust by one hour
+    current_time = datetime.strptime(current_time_string, "%Y-%m-%d %H:%M:%S") + timedelta(hours=1)
+    
+    # Format the current_time back to string if needed (if DataFrame contains string formatted dates)
+    current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Check if the adjusted current time exists in the 'Event Time' column
+    if current_time_str in HighImpactNews['Event Time'].values:
+        print(f"{datetime.now()} - No Trade, High impact news")
+        mt5.shutdown()
+        return False, None, None, None, None
+
+    # Check the number of active trades
+    positions = mt5.positions_get(symbol=symbol)
+    if positions is not None and len(positions) >= 3:
+        print(f"{datetime.now()} - There are already 3 or more active trades.")
+        mt5.shutdown()
+        return False, None, None, None, None
+
+    # Check PredictionMag
+    if PredictionMag == 0:
+        print(f"{datetime.now()} - PredictionMag is 0, no trade will be placed.")
+        mt5.shutdown()
+        return False, None, None, None, None
+
+    # Check PredictionDir
+    if PredictionDir == 0:
+        print(f"{datetime.now()} - PredictionDir is 0, no trade will be placed.")
+        mt5.shutdown()
+        return False, None, None, None, None
+
+    # Determine the trade type and set order parameters
+    if PredictionDir == 1:
+        trade_type = mt5.ORDER_TYPE_SELL
+    elif PredictionDir == 2:
+        trade_type = mt5.ORDER_TYPE_BUY
+    else:
+        print(f"{datetime.now()} - Invalid PredictionDir value.")
+        mt5.shutdown()
+        return False, None, None, None, None
+
+    # Get account balance
+    account_info = mt5.account_info()
+    if account_info is None:
+        print(f"{datetime.now()} - Failed to get account info, error code =", mt5.last_error())
+        mt5.shutdown()
+        return False, None, None, None, None
+
+    account_balance = account_info.balance
+    risk_percentage = 0.01  # 1% of account balance
+    risk_amount = account_balance * risk_percentage
+
+    # Calculate take profit and stop loss
+    take_profit = EntryPrice * (1 + PCT) if trade_type == mt5.ORDER_TYPE_BUY else EntryPrice * (1 - PCT)
+    stop_loss = EntryPrice * (1 - PCT) if trade_type == mt5.ORDER_TYPE_BUY else EntryPrice * (1 + PCT)
+
+    # Round take profit and stop loss to the nearest 2nd decimal place
+    take_profit = round(take_profit, 2)
+    stop_loss = round(stop_loss, 2)
+
+    # Calculate stop loss distance in points
+    stop_loss_distance = abs(EntryPrice - stop_loss)
+
+    # Get symbol info to determine point size and pip value
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is None:
+        print(f"{datetime.now()} - Failed to get symbol info for {symbol}, error code =", mt5.last_error())
+        mt5.shutdown()
+        return False, None, None, None, None
+
+    point = symbol_info.point
+    pip_value = symbol_info.trade_tick_value
+
+    # Calculate lot size and round to the nearest 2nd decimal place
+    lot_size = risk_amount / (stop_loss_distance / point * pip_value)
+    lot_size = round(lot_size, 2)
+
+    # Ensure lot size is in increments of 0.01
+    if lot_size < 0.01:
+        lot_size = 0.01
+
+    # Print the trade parameters
+    print(f"{datetime.now()} - EntryPrice: {EntryPrice}")
+    print(f"{datetime.now()} - StopLoss: {stop_loss}")
+    print(f"{datetime.now()} - TakeProfit: {take_profit}")
+    print(f"{datetime.now()} - LotSize: {lot_size}")
+
+    # Create the request dictionary
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": lot_size,
+        "type": trade_type,
+        "price": EntryPrice,
+        "sl": stop_loss,
+        "tp": take_profit,
+        "deviation": 20,
+        "magic": 234000,
+        "comment": "Python script open",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+
+    # Send the trading request
+    result = mt5.order_send(request)
+
+    # Check the result
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        print(f"{datetime.now()} - Order failed, retcode =", result.retcode)
+        mt5.shutdown()
+        return False, EntryPrice, stop_loss, take_profit, lot_size
+
+    print(f"{datetime.now()} - Order placed successfully.")
+    mt5.shutdown()
+
+
+def ProcessAndExecute(symbol, timeframe, MagModel, DirModel, DirScaler, MagScaler, NonStatMag, NonStatDir, PCT, HighImpactNews):
+    PredictionDir, EntryPrice = Dir(symbol, timeframe, DirModel, DirScaler, NonStatDir)
+    PredictionMag = Mag(symbol, timeframe, MagModel, MagScaler, NonStatMag)
+    PlaceTrade(EntryPrice, PredictionDir, PredictionMag, PCT, symbol, HighImpactNews)
+    return 
